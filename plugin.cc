@@ -13,9 +13,12 @@
 #include "cgraph.h"
 #include "plugin-version.h"
 #include "tree-pass.h"
+#include "util.h"
 #include <iostream>
 #include <map>
 #include <vector>
+
+typedef uint8_t cfcss_sig_t;
 
 // This plugin is licensed under GPL.
 int plugin_is_GPL_compatible;
@@ -47,10 +50,10 @@ public:
 
 unsigned int pass_cfcss::execute(function *fun) {
   // The signatures of basic blocks.
-  std::map<basic_block, uint16_t> sig;
+  std::map<basic_block, cfcss_sig_t> sig;
 
   // Signature differences.
-  std::map<basic_block, uint16_t> diff;
+  std::map<basic_block, cfcss_sig_t> diff;
 
   // Procedure call-related predecessors.
   std::multimap<basic_block, basic_block> pred_set;
@@ -68,10 +71,10 @@ unsigned int pass_cfcss::execute(function *fun) {
   std::map<std::pair<cgraph_node *, size_t>, cgraph_node *> clones;
 
   // A temporary accumulator.
-  uint16_t acc = 0;
+  cfcss_sig_t acc = 0;
 
   // Adjusting signature values.
-  std::map<basic_block, uint16_t> dmap;
+  std::map<basic_block, cfcss_sig_t> dmap;
 
   // Call-graph code.
   cgraph_node *node;
@@ -160,8 +163,6 @@ unsigned int pass_cfcss::execute(function *fun) {
 
       if (pred_set_len == 1) {
         diff[bb] = sig[pred_set_range.first->second] ^ sig[bb];
-      } else if (bb->preds->length() == 1) {
-        diff[bb] = sig[(*bb->preds)[0]->src] ^ sig[bb];
       } else if (pred_set_len >= 2) {
         basic_block base_pred = pred_set_range.first->second;
 
@@ -171,6 +172,8 @@ unsigned int pass_cfcss::execute(function *fun) {
           // D[i, m] = s[i, 1] XOR s[i, m]
           dmap[i->second] = sig[i->second] ^ sig[base_pred];
         }
+      } else if (bb->preds->length() == 1) {
+        diff[bb] = sig[(*bb->preds)[0]->src] ^ sig[bb];
       } else if (bb->preds->length() >= 2) {
         basic_block base_pred = nullptr;
         for (edge pred_edge : *bb->preds) {
@@ -193,44 +196,21 @@ unsigned int pass_cfcss::execute(function *fun) {
     push_cfun(node->get_fun());
     FOR_EACH_BB_FN (bb, cfun) {
       auto gsi = gsi_start_bb(bb);
-      vec<tree, va_gc> *inputs = nullptr;
       gasm *stmt = nullptr;
 
-      vec_safe_push(inputs, build_tree_list(build_tree_list(NULL_TREE,
-        build_string(2, "r")), build_int_cstu(integer_type_node, diff[bb])));
+      cfcss_sig_t cur_sig = sig[bb];
+      cfcss_sig_t cur_diff = diff[bb];
+      cfcss_sig_t cur_adj = dmap.find(bb) != dmap.end() ? dmap[bb] : 0;
 
-      stmt = gimple_build_asm_vec(".insn r CUSTOM_0, 2, 0, x0, %0, x0",
-                                  inputs, nullptr, nullptr, nullptr);
-      gimple_asm_set_volatile(stmt, true);
-      gsi_insert_before(&gsi, stmt, GSI_SAME_STMT);
-      inputs->pop();
-
-      if (bb->preds->length() >= 2 || pred_set.count(bb) >= 2) {
-        stmt = gimple_build_asm_vec(".insn r CUSTOM_0, 0, 0, x0, x0, x0",
+      if (bb->preds->length() >= 2 || pred_set.count(bb) >= 2)
+        stmt = gimple_build_asm_vec(inst_ctrlsig_m(cur_diff, cur_sig, cur_adj),
                                     nullptr, nullptr, nullptr, nullptr);
-        gimple_asm_set_volatile(stmt, true);
-        gsi_insert_before(&gsi, stmt, GSI_SAME_STMT);
-      }
-
-      vec_safe_push(inputs, build_tree_list(build_tree_list(NULL_TREE,
-        build_string(1, "r")),
-        build_int_cstu(integer_type_node, sig[bb])));
-      stmt = gimple_build_asm_vec(".insn r CUSTOM_2, 2, 0, x0, %0, x0",
-                                  inputs, nullptr, nullptr, nullptr);
+      else
+        stmt = gimple_build_asm_vec(inst_ctrlsig_s(cur_diff, cur_sig, cur_adj),
+                                    nullptr, nullptr, nullptr, nullptr);
       gimple_asm_set_volatile(stmt, true);
       gsi_insert_before(&gsi, stmt, GSI_SAME_STMT);
-      inputs->pop();
 
-      if (dmap.find(bb) != dmap.end()) {
-        vec_safe_push(inputs, build_tree_list(build_tree_list(NULL_TREE,
-          build_string(2, "r")),
-          build_int_cstu(integer_type_node, dmap[bb])));
-        stmt = gimple_build_asm_vec(".insn r CUSTOM_1, 2, 0, x0, %0, x0",
-                                    inputs, nullptr, nullptr, nullptr);
-        gimple_asm_set_volatile(stmt, true);
-        gsi_insert_before(&gsi, stmt, GSI_SAME_STMT);
-        inputs->pop();
-      }
     }
     pop_cfun();
   }

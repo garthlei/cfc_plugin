@@ -61,6 +61,10 @@ unsigned int pass_cfcss::execute(function *fun) {
   // Call sites represented by edges.
   std::vector<cgraph_edge *> call_sites;
 
+  // Conditional branches before adjusting signature assignments for
+  // fall-through multi-fan-in successors.
+  std::vector<std::pair<function *, gimple *>> fall_thru_sigs;
+
   // The number of clones of a function.
   std::map<cgraph_node *, size_t> num_clones;
 
@@ -75,6 +79,9 @@ unsigned int pass_cfcss::execute(function *fun) {
 
   // Adjusting signature values.
   std::map<basic_block, cfcss_sig_t> dmap;
+
+  // Adjusting signature values for fall-through multi-fan-in successors.
+  std::map<basic_block, cfcss_sig_t> dmap_fall_thru;
 
   // Call-graph code.
   cgraph_node *node;
@@ -192,6 +199,38 @@ unsigned int pass_cfcss::execute(function *fun) {
       }
     }
 
+  FOR_EACH_FUNCTION_WITH_GIMPLE_BODY (node)
+    FOR_EACH_BB_FN (bb, node->get_fun()) {
+      // A second adjusting signature has to be assigned when
+      // (a) Both successors are multi-fan-in basic blocks, and
+      // (b) The base predecessor of each successor is different.
+      if (bb->succs->length() == 2
+          && (*bb->succs)[0]->dest->preds->length() > 1
+          && (*bb->succs)[1]->dest->preds->length() > 1
+          && (*(*bb->succs)[0]->dest->preds)[0]->src
+            != (*(*bb->succs)[1]->dest->preds)[0]->src) {
+        auto gsi = gsi_last_bb(bb);
+        basic_block succs[] = {(*bb->succs)[0]->dest, (*bb->succs)[1]->dest};
+        basic_block fallthru_succ = find_fallthru_edge(bb->succs)->dest;
+
+        gsi_insert_after(&gsi, gimple_build_asm_vec(inst_ctrlsig_s(0,
+          sig[bb], sig[bb] ^ sig[(*fallthru_succ->preds)[0]->src]),
+          nullptr, nullptr, nullptr, nullptr),
+          GSI_SAME_STMT);
+        fall_thru_sigs.push_back(std::make_pair(node->get_fun(), gsi_stmt(gsi)));
+        auto br_target = succs[0] == fallthru_succ ? succs[0] : succs[1];
+        dmap[bb] = sig[bb] ^ sig[(*br_target->preds)[0]->src];
+      }
+    }
+
+  for (auto &pair : fall_thru_sigs) {
+    fprintf(stderr, "SPECIAL CASE\n");
+    push_cfun(pair.first);
+    split_block(pair.second->bb, pair.second);
+    pop_cfun();
+  }
+
+
   FOR_EACH_FUNCTION_WITH_GIMPLE_BODY (node) {
     push_cfun(node->get_fun());
     FOR_EACH_BB_FN (bb, cfun) {
@@ -210,7 +249,6 @@ unsigned int pass_cfcss::execute(function *fun) {
                                     nullptr, nullptr, nullptr, nullptr);
       gimple_asm_set_volatile(stmt, true);
       gsi_insert_before(&gsi, stmt, GSI_SAME_STMT);
-
     }
     pop_cfun();
   }

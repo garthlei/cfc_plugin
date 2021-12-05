@@ -61,6 +61,9 @@ unsigned int pass_cfcss::execute(function *fun) {
   // Call sites represented by edges.
   std::vector<cgraph_edge *> call_sites;
 
+  // Calls of functions not defined in the current module.
+  std::vector<cgraph_edge *> call_sites_undef;
+
   // Conditional branches before adjusting signature assignments for
   // fall-through multi-fan-in successors.
   std::vector<std::pair<function *, gimple *>> fall_thru_sigs;
@@ -89,6 +92,9 @@ unsigned int pass_cfcss::execute(function *fun) {
   // Basic block.
   basic_block bb;
 
+  // Look for the call sites. Those that invoke functions defined in this
+  // module are used for interprocedural analysis, while those invoking
+  // undefined functions are used to add pushsig/popsig instructions.
   FOR_EACH_FUNCTION (node) {
     if (!node->has_gimple_body_p() || node->clone_of != nullptr)
       continue;
@@ -106,6 +112,8 @@ unsigned int pass_cfcss::execute(function *fun) {
           }
 
           dup_num[it] = num_clones[it->callee] - 1;
+        } else {
+          call_sites_undef.push_back(it);
         }
     }
   }
@@ -222,6 +230,18 @@ unsigned int pass_cfcss::execute(function *fun) {
         dmap[bb] = sig[bb] ^ sig[(*br_target->preds)[0]->src];
       }
     }
+
+  for (cgraph_edge *edge : call_sites_undef) {
+    auto gsi = gsi_for_stmt(edge->call_stmt);
+    gsi_insert_before(&gsi, gimple_build_asm_vec(
+      ".insn r CUSTOM_1, 0, 0, x2, x0, x0",
+      nullptr, nullptr, nullptr, nullptr
+    ), GSI_SAME_STMT);
+    gsi_insert_after(&gsi, gimple_build_asm_vec(
+      ".insn r CUSTOM_1, 0, 0, x3, x0, x0",
+      nullptr, nullptr, nullptr, nullptr
+    ), GSI_SAME_STMT);
+  }
 
   for (auto &pair : fall_thru_sigs) {
     fprintf(stderr, "SPECIAL CASE\n");

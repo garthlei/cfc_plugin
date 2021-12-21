@@ -96,7 +96,8 @@ unsigned int pass_cfcss::execute(function *fun) {
   // module are used for interprocedural analysis, while those invoking
   // undefined functions are used to add pushsig/popsig instructions.
   FOR_EACH_FUNCTION (node) {
-    if (!node->has_gimple_body_p() || node->clone_of != nullptr)
+    // We do not rule out the compiler-created clones.
+    if (!node->has_gimple_body_p())
       continue;
     for (auto it = node->callees; it != nullptr; it = it->next_callee) {
         if (it->callee->has_gimple_body_p()) {
@@ -119,7 +120,7 @@ unsigned int pass_cfcss::execute(function *fun) {
   }
 
   FOR_EACH_FUNCTION (node) {
-    if (!node->has_gimple_body_p() || node->clone_of != nullptr)
+    if (!node->has_gimple_body_p())
       continue;
     clones[std::make_pair(node, 0)] = node;
     for (size_t i = 1; i < num_clones[node]; ++i) {
@@ -233,14 +234,21 @@ unsigned int pass_cfcss::execute(function *fun) {
 
   for (cgraph_edge *edge : call_sites_undef) {
     auto gsi = gsi_for_stmt(edge->call_stmt);
-    gsi_insert_before(&gsi, gimple_build_asm_vec(
+    auto stmt = gimple_build_asm_vec(
       ".insn r CUSTOM_1, 0, 0, x2, x0, x0",
       nullptr, nullptr, nullptr, nullptr
-    ), GSI_SAME_STMT);
-    gsi_insert_after(&gsi, gimple_build_asm_vec(
+    );
+    
+    gsi_insert_before(&gsi, stmt, GSI_SAME_STMT);
+    gimple_asm_set_volatile(stmt, true);
+    gimple_set_modified(stmt, false);
+    stmt = gimple_build_asm_vec(
       ".insn r CUSTOM_1, 0, 0, x3, x0, x0",
       nullptr, nullptr, nullptr, nullptr
-    ), GSI_SAME_STMT);
+    );
+    gsi_insert_after(&gsi, stmt, GSI_SAME_STMT);
+    gimple_asm_set_volatile(stmt, true);
+    gimple_set_modified(stmt, false);
   }
 
   for (auto &pair : fall_thru_sigs) {
@@ -254,7 +262,7 @@ unsigned int pass_cfcss::execute(function *fun) {
   FOR_EACH_FUNCTION_WITH_GIMPLE_BODY (node) {
     push_cfun(node->get_fun());
     FOR_EACH_BB_FN (bb, cfun) {
-      auto gsi = gsi_start_bb(bb);
+      auto gsi = gsi_after_labels(bb);
       gasm *stmt = nullptr;
 
       cfcss_sig_t cur_sig = sig[bb];

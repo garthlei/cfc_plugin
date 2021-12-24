@@ -21,6 +21,9 @@
 typedef uint8_t cfcss_sig_t;
 
 // This plugin is licensed under GPL.
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
 int plugin_is_GPL_compatible;
 
 class pass_cfcss : public simple_ipa_opt_pass {
@@ -286,6 +289,9 @@ unsigned int pass_cfcss::execute(function *fun) {
 
 pass_cfcss pass_inst;
 
+#ifdef _WIN32
+__declspec(dllexport)
+#endif
 int plugin_init(plugin_name_args *plugin_info, plugin_gcc_version *version) {
   register_pass_info pass_info({
     &pass_inst,

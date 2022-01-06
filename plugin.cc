@@ -222,15 +222,13 @@ unsigned int pass_cfcss::execute(function *fun) {
           && (*(*bb->succs)[0]->dest->preds)[0]->src
             != (*(*bb->succs)[1]->dest->preds)[0]->src) {
         auto gsi = gsi_last_bb(bb);
-        basic_block succs[] = {(*bb->succs)[0]->dest, (*bb->succs)[1]->dest};
-        basic_block fallthru_succ = find_fallthru_edge(bb->succs)->dest;
 
-        gsi_insert_after(&gsi, gimple_build_asm_vec(inst_ctrlsig_s(0,
-          sig[bb], sig[bb] ^ sig[(*fallthru_succ->preds)[0]->src]),
-          nullptr, nullptr, nullptr, nullptr),
-          GSI_SAME_STMT);
+        // No fallthru edges are allowed according to the semantics of
+        // gimple_cond. Here, we simply assume the 1-indexed one is the
+        // fallthru edge.
+        basic_block fallthru_succ = (*bb->succs)[1]->dest;
         fall_thru_sigs.push_back(std::make_pair(node->get_fun(), gsi_stmt(gsi)));
-        auto br_target = succs[0] == fallthru_succ ? succs[0] : succs[1];
+        auto br_target = (*bb->succs)[0]->dest;
         dmap[bb] = sig[bb] ^ sig[(*br_target->preds)[0]->src];
       }
     }
@@ -255,9 +253,16 @@ unsigned int pass_cfcss::execute(function *fun) {
   }
 
   for (auto &pair : fall_thru_sigs) {
-    fprintf(stderr, "SPECIAL CASE\n");
+    fprintf(stderr, "Control flow checking note: SPECIAL CASE\n");
     push_cfun(pair.first);
-    split_block(pair.second->bb, pair.second);
+    auto pred_bb = pair.second->bb;
+    auto orig_edge = (*pred_bb->succs)[1];
+    auto succ_bb = orig_edge->dest;
+    cfcss_sig_t dmap_val = sig[pred_bb] ^ sig[(*succ_bb->preds)[0]->src];
+    bb = split_edge(orig_edge);
+    sig[bb] = sig[pred_bb];
+    diff[bb] = 0;
+    dmap[bb] = dmap_val;
     pop_cfun();
   }
 

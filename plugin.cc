@@ -285,6 +285,18 @@ unsigned int pass_cfcss::execute(function *fun) {
                                     nullptr, nullptr, nullptr, nullptr);
       gimple_asm_set_volatile(stmt, true);
       gsi_insert_before(&gsi, stmt, GSI_SAME_STMT);
+      gsi = gsi_last_bb(bb);
+      if (gimple_code(gsi_stmt(gsi)) == GIMPLE_COND
+          || gimple_code(gsi_stmt(gsi)) == GIMPLE_CALL
+          || gimple_code(gsi_stmt(gsi)) == GIMPLE_RETURN)
+        gsi_prev(&gsi);
+      stmt = gimple_build_asm_vec(
+        ".insn r CUSTOM_1, 0, 0, x1, x0, x0",
+        nullptr, nullptr, nullptr, nullptr
+      );
+      gsi_insert_after(&gsi, stmt, GSI_SAME_STMT);
+      gimple_asm_set_volatile(stmt, true);
+      gimple_set_modified(stmt, false);
     }
     pop_cfun();
   }

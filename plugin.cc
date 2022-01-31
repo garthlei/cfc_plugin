@@ -130,8 +130,15 @@ unsigned int pass_cfcss::execute(function *fun) {
       cgraph_node *new_fun =
         node->create_version_clone_with_body(vNULL, nullptr, nullptr, nullptr,
                                              nullptr, "");
-      for (auto it1 = new_fun->callees, it2 = node->callees;
-           it1 != nullptr; it1 = it1->next_callee, it2 = it2->next_callee) {
+      auto it2 = node->callees;
+      while (it2->next_callee) it2 = it2->next_callee;
+      for (auto it1 = new_fun->callees;
+           it1 != nullptr; it1 = it1->next_callee, it2 = it2->prev_callee) {
+        if (it1->callee != it2->callee) {
+          std::cerr << "Fatal error in CFCSS plugin:" << std::endl;
+          std::cerr << "it1->callee != it2->callee" << std::endl;
+          return -1;
+        }
         if (it1->callee->has_gimple_body_p()) {
           call_sites.push_back(it1);
           dup_num[it1] = dup_num[it2];

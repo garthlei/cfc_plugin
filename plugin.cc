@@ -172,7 +172,6 @@ unsigned int pass_cfcss::execute(function *fun) {
 
     if (bb->preds->length() >= 2) {
       sprintf(inst, "ctrlsig_m %d,%d,%d", cur_diff, cur_sig, cur_adj);
-      rtx
       stmt = gimple_build_asm_vec(inst,
                                   nullptr, nullptr, nullptr, nullptr);
     } else {

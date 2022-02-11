@@ -206,7 +206,8 @@ unsigned int pass_cfcss::execute(function *fun) {
       is_tail_call = true;
       gsi_prev_nondebug(&gsi);
     }
-    sprintf(inst, "crcsig 0 # <bb %d>", bb->index);
+    sprintf(inst, "crcsig 0x%x # <bb %d>",
+            ((uint64_t)fun + bb->index) & 0xffff, bb->index);
     stmt = gimple_build_asm_vec(
       inst,
       nullptr, nullptr, nullptr, nullptr

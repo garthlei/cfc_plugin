@@ -199,7 +199,9 @@ unsigned int pass_cfcss::execute(function *fun) {
       is_tail_call = true;
     if (gimple_code(gsi_stmt(gsi)) == GIMPLE_COND
         || gimple_code(gsi_stmt(gsi)) == GIMPLE_CALL
-        || gimple_code(gsi_stmt(gsi)) == GIMPLE_RETURN)
+        || gimple_code(gsi_stmt(gsi)) == GIMPLE_RETURN
+        || gimple_code(gsi_stmt(gsi)) == GIMPLE_GOTO
+        || gimple_code(gsi_stmt(gsi)) == GIMPLE_SWITCH)
       gsi_prev_nondebug(&gsi);
     if (gimple_code(gsi_stmt(gsi)) == GIMPLE_CALL
         && gimple_call_tail_p((const gcall *)gsi_stmt(gsi))) {

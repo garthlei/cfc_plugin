@@ -8,8 +8,7 @@
 #include "gcc-plugin.h"
 #include "context.h"
 #include "tree.h"
-#include "gimple.h"
-#include "gimple-iterator.h"
+#include "rtl.h"
 #include "plugin-version.h"
 #include "tree-pass.h"
 #include <iostream>
@@ -26,10 +25,10 @@ __declspec(dllexport)
 #endif
 int plugin_is_GPL_compatible;
 
-class pass_cfcss : public gimple_opt_pass {
+class pass_cfcss : public rtl_opt_pass {
 public:
-  pass_cfcss() : gimple_opt_pass({
-    GIMPLE_PASS,
+  pass_cfcss() : rtl_opt_pass({
+    RTL_PASS,
     "cfcss",
     OPTGROUP_NONE,
     TV_INTEGRATION,
@@ -58,12 +57,13 @@ unsigned int pass_cfcss::execute(function *fun) {
   // Signature differences.
   std::map<basic_block, cfcss_sig_t> diff;
 
-  // Call statements.
-  std::vector<gimple *> call_stmts;
+  // Call sites.
+  std::vector<std::pair<rtx_call_insn *, basic_block>> call_sites;
 
   // Conditional branches before adjusting signature assignments for
   // fall-through multi-fan-in successors.
-  std::vector<gimple *> fall_thru_sigs;
+  std::vector<edge> fall_thru_sigs;
+  // std::vector<gimple *> fall_thru_sigs;
 
   // A temporary accumulator.
   cfcss_sig_t acc = 0;
@@ -77,8 +77,17 @@ unsigned int pass_cfcss::execute(function *fun) {
   // Basic block.
   basic_block bb;
 
+  // Instruction.
+  rtx_insn *insn;
+
+  // Assembly expression (ASM_OPERANDS).
+  rtx asm_expr;
+
   // Instruction string buffer.
-  char inst[BUF_SIZE];
+  char asm_str_buf[BUF_SIZE];
+
+  // Heap-allocated instruction C-style string pointer.
+  char *asm_str;
 
   // Whether a tail call is encountered.
   bool is_tail_call;
@@ -89,15 +98,23 @@ unsigned int pass_cfcss::execute(function *fun) {
     // Find all the call statements. The basic blocks are to be split after
     // those statements because subroutine calls can bring changes to the CRC
     // signature.
-    for (auto gsi = gsi_start_bb(bb); !gsi_end_p(gsi); gsi_next(&gsi))
-      if (gimple_code(gsi_stmt(gsi)) == GIMPLE_CALL
-          && gsi.ptr != gsi_last_nondebug_bb(bb).ptr
-          && !gimple_call_tail_p((const gcall *)gsi_stmt(gsi)))
-        call_stmts.push_back(gsi_stmt(gsi));
+    bool is_last = true;
+    FOR_BB_INSNS_REVERSE (bb, insn) {
+      if (CALL_P(insn) && !is_last && !SIBLING_CALL_P(insn))
+        call_sites.push_back(std::make_pair(as_a<rtx_call_insn *>(insn), bb));  
+      if (NONDEBUG_INSN_P(insn))
+        is_last = false;
+    }
   }
 
-  for (auto &stmt : call_stmts)
-      split_block(stmt->bb, stmt);
+  for (auto &pair : call_sites) {
+    auto stmt = pair.first;
+    auto bb = pair.second;
+    auto next_bb = split_block(bb, stmt);
+    if (dump_file != nullptr)
+      fprintf(dump_file, "new block %d due to call site %d\n",
+          next_bb->dest->index, INSN_UID(stmt));
+  }
 
   FOR_EACH_BB_FN (bb, fun) {
     // Naïve approach to assign signatures.
@@ -135,23 +152,20 @@ unsigned int pass_cfcss::execute(function *fun) {
         && (*bb->succs)[1]->dest->preds->length() > 1
         && (*(*bb->succs)[0]->dest->preds)[0]->src
           != (*(*bb->succs)[1]->dest->preds)[0]->src) {
-      auto gsi = gsi_last_bb(bb);
-
-      // No fallthru edges are allowed according to the semantics of
-      // gimple_cond. Here, we simply assume the 1-indexed one is the
-      // fallthru edge.
-      basic_block fallthru_succ = (*bb->succs)[1]->dest;
-      fall_thru_sigs.push_back(gsi_stmt(gsi));
+      // Here, we simply assume the 1-indexed one is the fallthru edge. It does
+      // not really matter.
+      fall_thru_sigs.push_back((*bb->succs)[1]);
       auto br_target = (*bb->succs)[0]->dest;
       dmap[bb] = sig[bb] ^ sig[(*br_target->preds)[0]->src];
     }
   }
 
-  for (auto stmt : fall_thru_sigs) {
-    fprintf(stderr, "Control flow checking note: SPECIAL CASE\n");
-    auto pred_bb = stmt->bb;
-    auto orig_edge = (*pred_bb->succs)[1];
+  for (auto orig_edge : fall_thru_sigs) {
+    auto pred_bb = orig_edge->src;
     auto succ_bb = orig_edge->dest;
+    if (dump_file)
+      fprintf(dump_file, "edge <bb %d>-><bb %d> split due to special case\n",
+          pred_bb->index, succ_bb->index);
     cfcss_sig_t dmap_val = sig[pred_bb] ^ sig[(*succ_bb->preds)[0]->src];
     bb = split_edge(orig_edge);
     sig[bb] = sig[pred_bb];
@@ -159,10 +173,13 @@ unsigned int pass_cfcss::execute(function *fun) {
     dmap[bb] = dmap_val;
   }
 
-
   FOR_EACH_BB_FN (bb, fun) {
-    auto gsi = gsi_start_nondebug_after_labels_bb(bb);
-    gasm *stmt = nullptr;
+    if (dump_file)
+      fprintf(dump_file, "bb %d:\n", bb->index);
+    auto insert_ptr = BB_HEAD(bb);
+    while (insert_ptr && insert_ptr != NEXT_INSN(BB_END(bb))
+           && !NONDEBUG_INSN_P(insert_ptr))
+      insert_ptr = NEXT_INSN(insert_ptr);
 
     cfcss_sig_t cur_sig = sig[bb];
     cfcss_sig_t cur_diff = diff[bb];
@@ -171,60 +188,81 @@ unsigned int pass_cfcss::execute(function *fun) {
     
 
     if (bb->preds->length() >= 2) {
-      sprintf(inst, "ctrlsig_m %d,%d,%d", cur_diff, cur_sig, cur_adj);
-      stmt = gimple_build_asm_vec(inst,
-                                  nullptr, nullptr, nullptr, nullptr);
+      sprintf(asm_str_buf, "ctrlsig_m %d,%d,%d", cur_diff, cur_sig, cur_adj, bb->index);
+      asm_str = new char[strlen(asm_str_buf) + 1];
+      strcpy(asm_str, asm_str_buf);
+      asm_expr = gen_rtx_ASM_OPERANDS (VOIDmode, asm_str, "", 0,
+          rtvec_alloc (0), rtvec_alloc (0),
+          rtvec_alloc (0), UNKNOWN_LOCATION);
     } else {
-      sprintf(inst, "ctrlsig_s %d,%d,%d", cur_diff, cur_sig, cur_adj);
-      stmt = gimple_build_asm_vec(inst,
-                                  nullptr, nullptr, nullptr, nullptr);
+      sprintf(asm_str_buf, "ctrlsig_s %d,%d,%d", cur_diff, cur_sig, cur_adj, bb->index);
+      asm_str = new char[strlen(asm_str_buf) + 1];
+      strcpy(asm_str, asm_str_buf);
+      asm_expr = gen_rtx_ASM_OPERANDS (VOIDmode, asm_str, "", 0,
+          rtvec_alloc (0), rtvec_alloc (0),
+          rtvec_alloc (0), UNKNOWN_LOCATION);
     }
-    gimple_asm_set_volatile(stmt, true);
-    gsi_insert_before(&gsi, stmt, GSI_NEW_STMT);
+    MEM_VOLATILE_P(asm_expr) = true;
+    insn = make_insn_raw(asm_expr);
+    if (dump_file)
+      fprintf(dump_file, "inserting ctrlsig before uid %d\n",
+          INSN_UID(insert_ptr));
+    add_insn_before(insn, insert_ptr, bb);
+    insert_ptr = insn;
+    if (insert_ptr == NEXT_INSN(BB_END(bb)))
+      BB_END(bb) = insn;
 
     if ((*bb->preds)[0]->src == fun->cfg->x_entry_block_ptr) {
-      stmt = gimple_build_asm_vec(
-        "pushsig",
-        nullptr, nullptr, nullptr, nullptr
-      );
-      gsi_insert_before(&gsi, stmt, GSI_SAME_STMT);
-      gimple_asm_set_volatile(stmt, true);
-      gimple_set_modified(stmt, false);
+      if (dump_file)
+        fprintf(dump_file, "inserting pushsig before uid %d\n",
+            INSN_UID(insert_ptr));
+      asm_expr = gen_rtx_ASM_OPERANDS (VOIDmode, "pushsig", "", 0,
+          rtvec_alloc (0), rtvec_alloc (0),
+          rtvec_alloc (0), UNKNOWN_LOCATION);
+      MEM_VOLATILE_P(asm_expr) = true;
+      add_insn_before(make_insn_raw(asm_expr), insert_ptr, bb);
     }
 
-    gsi = gsi_last_nondebug_bb(bb);
+    insert_ptr = BB_END(bb);
+    while (insert_ptr && !NONDEBUG_INSN_P(insert_ptr))
+      insert_ptr = PREV_INSN(insert_ptr);
     is_tail_call = false;
-    if (gimple_code(gsi_stmt(gsi)) == GIMPLE_CALL
-        && gimple_call_tail_p((const gcall *)gsi_stmt(gsi)))
+    if (CALL_P(insert_ptr) && SIBLING_CALL_P(insert_ptr))
       is_tail_call = true;
-    if (gimple_code(gsi_stmt(gsi)) == GIMPLE_COND
-        || gimple_code(gsi_stmt(gsi)) == GIMPLE_CALL
-        || gimple_code(gsi_stmt(gsi)) == GIMPLE_RETURN)
-      gsi_prev_nondebug(&gsi);
-    if (gimple_code(gsi_stmt(gsi)) == GIMPLE_CALL
-        && gimple_call_tail_p((const gcall *)gsi_stmt(gsi))) {
+    if (CALL_P(insert_ptr) || JUMP_P(insert_ptr))
+      do insert_ptr = PREV_INSN(insert_ptr);
+      while (insert_ptr && !NONDEBUG_INSN_P(insert_ptr));
+    if (CALL_P(insert_ptr) && SIBLING_CALL_P(insert_ptr)) {
       is_tail_call = true;
-      gsi_prev_nondebug(&gsi);
+      do insert_ptr = PREV_INSN(insert_ptr);
+      while (insert_ptr && !NONDEBUG_INSN_P(insert_ptr));
     }
-    sprintf(inst, "crcsig 0x%x # <bb %d>",
+    sprintf(asm_str_buf, "crcsig 0x%x # <bb %d>",
             ((uint64_t)fun + bb->index) & 0xffff, bb->index);
-    stmt = gimple_build_asm_vec(
-      inst,
-      nullptr, nullptr, nullptr, nullptr
-    );
-    gsi_insert_after(&gsi, stmt, GSI_NEW_STMT);
-    gimple_asm_set_volatile(stmt, true);
-    gimple_set_modified(stmt, false);
+    asm_str = new char[strlen(asm_str_buf) + 1];
+    strcpy(asm_str, asm_str_buf);
+    asm_expr = gen_rtx_ASM_OPERANDS (VOIDmode, asm_str, "", 0,
+        rtvec_alloc (0), rtvec_alloc (0),
+        rtvec_alloc (0), UNKNOWN_LOCATION);
+    MEM_VOLATILE_P(asm_expr) = true;
+    insn = make_insn_raw(asm_expr);
+    if (dump_file)
+      fprintf(dump_file, "inserting crcsig after uid %d\n",
+          INSN_UID(insert_ptr));
+    add_insn_after(insn, insert_ptr, bb);
+    insert_ptr = insn;
 
     if ((*bb->succs)[0]->dest == fun->cfg->x_exit_block_ptr
         || is_tail_call) {
-      stmt = gimple_build_asm_vec(
-        "popsig",
-        nullptr, nullptr, nullptr, nullptr
-      );
-      gsi_insert_after(&gsi, stmt, GSI_SAME_STMT);
-      gimple_asm_set_volatile(stmt, true);
-      gimple_set_modified(stmt, false);
+      asm_expr = gen_rtx_ASM_OPERANDS (VOIDmode, "popsig", "", 0,
+          rtvec_alloc (0), rtvec_alloc (0),
+          rtvec_alloc (0), UNKNOWN_LOCATION);
+      MEM_VOLATILE_P(asm_expr) = true;
+      insn = make_insn_raw(asm_expr);
+      if (dump_file)
+        fprintf(dump_file, "inserting popsig after uid %d\n",
+            INSN_UID(insert_ptr));
+      add_insn_after(insn, insert_ptr, bb);
     }
   }
 
@@ -241,9 +279,9 @@ __declspec(dllexport)
 int plugin_init(plugin_name_args *plugin_info, plugin_gcc_version *version) {
   register_pass_info pass_info({
     &pass_inst,
-    "resx",
+    "shorten",
     0,
-    PASS_POS_INSERT_AFTER
+    PASS_POS_INSERT_BEFORE
   });
 
   if (!plugin_default_version_check(version, &gcc_version))

@@ -106,9 +106,9 @@ unsigned int pass_cfcss::execute(function *fun) {
 
 
   FOR_EACH_BB_FN (bb, fun) {
-    if (bb->preds->length() == 1) {
+    if (EDGE_COUNT(bb->preds) == 1) {
       diff[bb] = sig[(*bb->preds)[0]->src] ^ sig[bb];
-    } else if (bb->preds->length() >= 2) {
+    } else if (EDGE_COUNT(bb->preds) >= 2) {
       basic_block base_pred = nullptr;
       for (edge pred_edge : *bb->preds) {
         base_pred = pred_edge->src;
@@ -130,9 +130,9 @@ unsigned int pass_cfcss::execute(function *fun) {
     // A second adjusting signature has to be assigned when
     // (a) Both successors are multi-fan-in basic blocks, and
     // (b) The base predecessor of each successor is different.
-    if (bb->succs->length() == 2
-        && (*bb->succs)[0]->dest->preds->length() > 1
-        && (*bb->succs)[1]->dest->preds->length() > 1
+    if (EDGE_COUNT(bb->succs) == 2
+        && EDGE_COUNT((*bb->succs)[0]->dest->preds) > 1
+        && EDGE_COUNT((*bb->succs)[1]->dest->preds) > 1
         && (*(*bb->succs)[0]->dest->preds)[0]->src
           != (*(*bb->succs)[1]->dest->preds)[0]->src) {
       auto gsi = gsi_last_bb(bb);
@@ -170,7 +170,7 @@ unsigned int pass_cfcss::execute(function *fun) {
 
     
 
-    if (bb->preds->length() >= 2) {
+    if (EDGE_COUNT(bb->preds) >= 2) {
       sprintf(inst, "ctrlsig_m %d,%d,%d", cur_diff, cur_sig, cur_adj);
       stmt = gimple_build_asm_vec(inst,
                                   nullptr, nullptr, nullptr, nullptr);
@@ -182,7 +182,8 @@ unsigned int pass_cfcss::execute(function *fun) {
     gimple_asm_set_volatile(stmt, true);
     gsi_insert_before(&gsi, stmt, GSI_NEW_STMT);
 
-    if ((*bb->preds)[0]->src == fun->cfg->x_entry_block_ptr) {
+    if (EDGE_COUNT(bb->preds) > 0
+        && (*bb->preds)[0]->src == fun->cfg->x_entry_block_ptr) {
       stmt = gimple_build_asm_vec(
         "pushsig",
         nullptr, nullptr, nullptr, nullptr
@@ -218,7 +219,8 @@ unsigned int pass_cfcss::execute(function *fun) {
     gimple_asm_set_volatile(stmt, true);
     gimple_set_modified(stmt, false);
 
-    if ((*bb->succs)[0]->dest == fun->cfg->x_exit_block_ptr
+    if ((EDGE_COUNT(bb->succs) > 0
+          && (*bb->succs)[0]->dest == fun->cfg->x_exit_block_ptr)
         || is_tail_call) {
       stmt = gimple_build_asm_vec(
         "popsig",

@@ -140,7 +140,6 @@ unsigned int pass_cfcss::execute(function *fun) {
       // No fallthru edges are allowed according to the semantics of
       // gimple_cond. Here, we simply assume the 1-indexed one is the
       // fallthru edge.
-      basic_block fallthru_succ = (*bb->succs)[1]->dest;
       fall_thru_sigs.push_back(gsi_stmt(gsi));
       auto br_target = (*bb->succs)[0]->dest;
       dmap[bb] = sig[bb] ^ sig[(*br_target->preds)[0]->src];
@@ -148,11 +147,12 @@ unsigned int pass_cfcss::execute(function *fun) {
   }
 
   for (auto stmt : fall_thru_sigs) {
-    fprintf(stderr, "Control flow checking note: SPECIAL CASE\n");
     auto pred_bb = stmt->bb;
     auto orig_edge = (*pred_bb->succs)[1];
     auto succ_bb = orig_edge->dest;
     cfcss_sig_t dmap_val = sig[pred_bb] ^ sig[(*succ_bb->preds)[0]->src];
+    if ((orig_edge->flags & EDGE_ABNORMAL) != 0)
+      return 0;
     bb = split_edge(orig_edge);
     sig[bb] = sig[pred_bb];
     diff[bb] = 0;
@@ -202,15 +202,17 @@ unsigned int pass_cfcss::execute(function *fun) {
         || gimple_code(gsi_stmt(gsi)) == GIMPLE_CALL
         || gimple_code(gsi_stmt(gsi)) == GIMPLE_RETURN
         || gimple_code(gsi_stmt(gsi)) == GIMPLE_GOTO
-        || gimple_code(gsi_stmt(gsi)) == GIMPLE_SWITCH)
+        || gimple_code(gsi_stmt(gsi)) == GIMPLE_SWITCH
+        || (gimple_code(gsi_stmt(gsi)) == GIMPLE_ASM
+            && gimple_asm_nlabels((const gasm *)gsi_stmt(gsi)) > 0))
       gsi_prev_nondebug(&gsi);
     if (gimple_code(gsi_stmt(gsi)) == GIMPLE_CALL
         && gimple_call_tail_p((const gcall *)gsi_stmt(gsi))) {
       is_tail_call = true;
       gsi_prev_nondebug(&gsi);
     }
-    sprintf(inst, "crcsig 0x%x # <bb %d>",
-            ((uint64_t)fun + bb->index) & 0xffff, bb->index);
+    sprintf(inst, "crcsig 0x%x",
+            ((fun->funcdef_no << 8) + bb->index) & 0xffff, bb->index);
     stmt = gimple_build_asm_vec(
       inst,
       nullptr, nullptr, nullptr, nullptr
@@ -221,6 +223,7 @@ unsigned int pass_cfcss::execute(function *fun) {
 
     if ((EDGE_COUNT(bb->succs) > 0
           && (*bb->succs)[0]->dest == fun->cfg->x_exit_block_ptr)
+        || EDGE_COUNT(bb->succs) == 0
         || is_tail_call) {
       stmt = gimple_build_asm_vec(
         "popsig",
@@ -245,7 +248,7 @@ __declspec(dllexport)
 int plugin_init(plugin_name_args *plugin_info, plugin_gcc_version *version) {
   register_pass_info pass_info({
     &pass_inst,
-    "resx",
+    "optimized",
     0,
     PASS_POS_INSERT_AFTER
   });

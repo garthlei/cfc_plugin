@@ -123,9 +123,9 @@ unsigned int pass_cfcss::execute(function *fun) {
 
 
   FOR_EACH_BB_FN (bb, fun) {
-    if (bb->preds->length() == 1) {
+    if (EDGE_COUNT(bb->preds) == 1) {
       diff[bb] = sig[(*bb->preds)[0]->src] ^ sig[bb];
-    } else if (bb->preds->length() >= 2) {
+    } else if (EDGE_COUNT(bb->preds) >= 2) {
       basic_block base_pred = nullptr;
       for (edge pred_edge : *bb->preds) {
         base_pred = pred_edge->src;
@@ -147,9 +147,9 @@ unsigned int pass_cfcss::execute(function *fun) {
     // A second adjusting signature has to be assigned when
     // (a) Both successors are multi-fan-in basic blocks, and
     // (b) The base predecessor of each successor is different.
-    if (bb->succs->length() == 2
-        && (*bb->succs)[0]->dest->preds->length() > 1
-        && (*bb->succs)[1]->dest->preds->length() > 1
+    if (EDGE_COUNT(bb->succs) == 2
+        && EDGE_COUNT((*bb->succs)[0]->dest->preds) > 1
+        && EDGE_COUNT((*bb->succs)[1]->dest->preds) > 1
         && (*(*bb->succs)[0]->dest->preds)[0]->src
           != (*(*bb->succs)[1]->dest->preds)[0]->src) {
       // Here, we simply assume the 1-indexed one is the fallthru edge. It does
@@ -167,6 +167,8 @@ unsigned int pass_cfcss::execute(function *fun) {
       fprintf(dump_file, "edge <bb %d>-><bb %d> split due to special case\n",
           pred_bb->index, succ_bb->index);
     cfcss_sig_t dmap_val = sig[pred_bb] ^ sig[(*succ_bb->preds)[0]->src];
+    if ((orig_edge->flags & EDGE_ABNORMAL) != 0)
+      return 0;
     bb = split_edge(orig_edge);
     sig[bb] = sig[pred_bb];
     diff[bb] = 0;
@@ -187,7 +189,7 @@ unsigned int pass_cfcss::execute(function *fun) {
 
     
 
-    if (bb->preds->length() >= 2) {
+    if (EDGE_COUNT(bb->preds) >= 2) {
       sprintf(asm_str_buf, "ctrlsig_m %d,%d,%d", cur_diff, cur_sig, cur_adj, bb->index);
       asm_str = new char[strlen(asm_str_buf) + 1];
       strcpy(asm_str, asm_str_buf);
@@ -212,7 +214,8 @@ unsigned int pass_cfcss::execute(function *fun) {
     if (insert_ptr == NEXT_INSN(BB_END(bb)))
       BB_END(bb) = insn;
 
-    if ((*bb->preds)[0]->src == fun->cfg->x_entry_block_ptr) {
+    if (EDGE_COUNT(bb->preds) > 0
+        && (*bb->preds)[0]->src == fun->cfg->x_entry_block_ptr) {
       if (dump_file)
         fprintf(dump_file, "inserting pushsig before uid %d\n",
             INSN_UID(insert_ptr));
@@ -237,8 +240,8 @@ unsigned int pass_cfcss::execute(function *fun) {
       do insert_ptr = PREV_INSN(insert_ptr);
       while (insert_ptr && !NONDEBUG_INSN_P(insert_ptr));
     }
-    sprintf(asm_str_buf, "crcsig 0x%x # <bb %d>",
-            ((uint64_t)fun + bb->index) & 0xffff, bb->index);
+    sprintf(asm_str_buf, "crcsig 0x%x",
+            ((fun->funcdef_no << 8) + bb->index) & 0xffff, bb->index);
     asm_str = new char[strlen(asm_str_buf) + 1];
     strcpy(asm_str, asm_str_buf);
     asm_expr = gen_rtx_ASM_OPERANDS (VOIDmode, asm_str, "", 0,
@@ -252,7 +255,9 @@ unsigned int pass_cfcss::execute(function *fun) {
     add_insn_after(insn, insert_ptr, bb);
     insert_ptr = insn;
 
-    if ((*bb->succs)[0]->dest == fun->cfg->x_exit_block_ptr
+    if ((EDGE_COUNT(bb->succs) > 0
+         && (*bb->succs)[0]->dest == fun->cfg->x_exit_block_ptr)
+        || EDGE_COUNT(bb->succs) == 0
         || is_tail_call) {
       asm_expr = gen_rtx_ASM_OPERANDS (VOIDmode, "popsig", "", 0,
           rtvec_alloc (0), rtvec_alloc (0),

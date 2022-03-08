@@ -284,7 +284,7 @@ __declspec(dllexport)
 int plugin_init(plugin_name_args *plugin_info, plugin_gcc_version *version) {
   register_pass_info pass_info({
     &pass_inst,
-    "shorten",
+    "*free_cfg",
     0,
     PASS_POS_INSERT_BEFORE
   });

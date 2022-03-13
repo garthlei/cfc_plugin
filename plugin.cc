@@ -180,7 +180,8 @@ unsigned int pass_cfcss::execute(function *fun) {
       edge fallthru_edge = FALLTHRU_EDGE(bb);
       if ((fallthru_edge->flags & EDGE_ABNORMAL) != 0)
         return 0;
-      gcc_assert(fallthru_edge->flags & EDGE_FALLTHRU);
+      if (!(fallthru_edge->flags & EDGE_FALLTHRU))
+        return 0;
       fall_thru_sigs.push_back(fallthru_edge);
       auto br_target = BRANCH_EDGE(bb)->dest;
       dmap[bb] = sig[bb] ^ sig[(*br_target->preds)[0]->src];

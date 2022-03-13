@@ -152,10 +152,14 @@ unsigned int pass_cfcss::execute(function *fun) {
         && EDGE_COUNT((*bb->succs)[1]->dest->preds) > 1
         && (*(*bb->succs)[0]->dest->preds)[0]->src
           != (*(*bb->succs)[1]->dest->preds)[0]->src) {
-      // Here, we simply assume the 1-indexed one is the fallthru edge. It does
-      // not really matter.
-      fall_thru_sigs.push_back((*bb->succs)[1]);
-      auto br_target = (*bb->succs)[0]->dest;
+      // We have to split the fallthru edge instead of the branch edge.
+      // In fact, if the branch edge were split and the destination block
+      // had a fallthru multi-fan-out predecessor, that edge would also
+      // be split, leading to messy problems.
+      edge fallthru_edge = FALLTHRU_EDGE(bb);
+      gcc_assert(fallthru_edge->flags & EDGE_FALLTHRU);
+      fall_thru_sigs.push_back(fallthru_edge);
+      auto br_target = BRANCH_EDGE(bb)->dest;
       dmap[bb] = sig[bb] ^ sig[(*br_target->preds)[0]->src];
     }
   }
@@ -170,6 +174,7 @@ unsigned int pass_cfcss::execute(function *fun) {
     if ((orig_edge->flags & EDGE_ABNORMAL) != 0)
       return 0;
     bb = split_edge(orig_edge);
+    gcc_assert(sig.find(pred_bb) != sig.end());
     sig[bb] = sig[pred_bb];
     diff[bb] = 0;
     dmap[bb] = dmap_val;
@@ -182,7 +187,7 @@ unsigned int pass_cfcss::execute(function *fun) {
     while (insert_ptr && insert_ptr != NEXT_INSN(BB_END(bb))
            && !NONDEBUG_INSN_P(insert_ptr))
       insert_ptr = NEXT_INSN(insert_ptr);
-
+    gcc_assert(sig.find(bb) != sig.end());
     cfcss_sig_t cur_sig = sig[bb];
     cfcss_sig_t cur_diff = diff[bb];
     cfcss_sig_t cur_adj = dmap.find(bb) != dmap.end() ? dmap[bb] : 0;
@@ -190,14 +195,14 @@ unsigned int pass_cfcss::execute(function *fun) {
     
 
     if (EDGE_COUNT(bb->preds) >= 2) {
-      sprintf(asm_str_buf, "ctrlsig_m %d,%d,%d", cur_diff, cur_sig, cur_adj, bb->index);
+      sprintf(asm_str_buf, "ctrlsig_m %d,%d,%d", cur_diff, cur_sig, cur_adj);
       asm_str = new char[strlen(asm_str_buf) + 1];
       strcpy(asm_str, asm_str_buf);
       asm_expr = gen_rtx_ASM_OPERANDS (VOIDmode, asm_str, "", 0,
           rtvec_alloc (0), rtvec_alloc (0),
           rtvec_alloc (0), UNKNOWN_LOCATION);
     } else {
-      sprintf(asm_str_buf, "ctrlsig_s %d,%d,%d", cur_diff, cur_sig, cur_adj, bb->index);
+      sprintf(asm_str_buf, "ctrlsig_s %d,%d,%d", cur_diff, cur_sig, cur_adj);
       asm_str = new char[strlen(asm_str_buf) + 1];
       strcpy(asm_str, asm_str_buf);
       asm_expr = gen_rtx_ASM_OPERANDS (VOIDmode, asm_str, "", 0,
@@ -241,7 +246,7 @@ unsigned int pass_cfcss::execute(function *fun) {
       while (insert_ptr && !NONDEBUG_INSN_P(insert_ptr));
     }
     sprintf(asm_str_buf, "crcsig 0x%x",
-            ((fun->funcdef_no << 8) + bb->index) & 0xffff, bb->index);
+            ((fun->funcdef_no << 8) + bb->index) & 0xffff);
     asm_str = new char[strlen(asm_str_buf) + 1];
     strcpy(asm_str, asm_str_buf);
     asm_expr = gen_rtx_ASM_OPERANDS (VOIDmode, asm_str, "", 0,

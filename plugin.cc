@@ -178,6 +178,8 @@ unsigned int pass_cfcss::execute(function *fun) {
       // had a fallthru multi-fan-out predecessor, that edge would also
       // be split, leading to messy problems.
       edge fallthru_edge = FALLTHRU_EDGE(bb);
+      if ((fallthru_edge->flags & EDGE_ABNORMAL) != 0)
+        return 0;
       gcc_assert(fallthru_edge->flags & EDGE_FALLTHRU);
       fall_thru_sigs.push_back(fallthru_edge);
       auto br_target = BRANCH_EDGE(bb)->dest;
@@ -192,8 +194,6 @@ unsigned int pass_cfcss::execute(function *fun) {
       fprintf(dump_file, "edge <bb %d>-><bb %d> split due to special case\n",
           pred_bb->index, succ_bb->index);
     cfcss_sig_t dmap_val = sig[pred_bb] ^ sig[(*succ_bb->preds)[0]->src];
-    if ((orig_edge->flags & EDGE_ABNORMAL) != 0)
-      return 0;
     bb = split_edge(orig_edge);
     gcc_assert(sig.find(pred_bb) != sig.end());
     sig[bb] = sig[pred_bb];

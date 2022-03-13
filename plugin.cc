@@ -144,14 +144,35 @@ unsigned int pass_cfcss::execute(function *fun) {
   }
 
   FOR_EACH_BB_FN (bb, fun) {
+    // We do not currently support blocks with more than two
+    // multi-fan-in successors with different base predecessors.
+    basic_block base_pred = nullptr;
+    bool is_special = false;
+    edge e;
+    edge_iterator ei;
+    FOR_EACH_EDGE(e, ei, bb->succs)
+      if (EDGE_COUNT(e->dest->preds) > 1
+          && base_pred == nullptr) {
+        base_pred = (*e->dest->preds)[0]->src;
+      } else if (EDGE_COUNT(e->dest->preds) > 1
+          && base_pred != (*e->dest->preds)[0]->src) {
+        is_special = true;
+        break;
+      }
+    
+    if (EDGE_COUNT(bb->succs) > 2 && is_special) {
+      if (dump_file != nullptr)
+        fprintf(dump_file,
+            "control flow integrity is not enforced because bb %d"
+            " has too many successors.\n",
+            bb->index);
+      return 0;
+    }
+
     // A second adjusting signature has to be assigned when
     // (a) Both successors are multi-fan-in basic blocks, and
     // (b) The base predecessor of each successor is different.
-    if (EDGE_COUNT(bb->succs) == 2
-        && EDGE_COUNT((*bb->succs)[0]->dest->preds) > 1
-        && EDGE_COUNT((*bb->succs)[1]->dest->preds) > 1
-        && (*(*bb->succs)[0]->dest->preds)[0]->src
-          != (*(*bb->succs)[1]->dest->preds)[0]->src) {
+    if (is_special) {
       // We have to split the fallthru edge instead of the branch edge.
       // In fact, if the branch edge were split and the destination block
       // had a fallthru multi-fan-out predecessor, that edge would also

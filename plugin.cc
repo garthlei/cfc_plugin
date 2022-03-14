@@ -262,14 +262,26 @@ unsigned int pass_cfcss::execute(function *fun) {
 
     if (EDGE_COUNT(bb->preds) > 0
         && (*bb->preds)[0]->src == fun->cfg->x_entry_block_ptr) {
-      if (dump_file)
+      basic_block new_bb = nullptr;
+      if (EDGE_COUNT(bb->preds) > 1) {
+        new_bb = split_edge((*bb->preds)[0]);
+        insert_ptr = BB_HEAD(new_bb);
+      }
+      if (dump_file && EDGE_COUNT(bb->preds) < 2)
         fprintf(dump_file, "inserting pushsig before uid %d\n",
+            INSN_UID(insert_ptr));
+      else if (dump_file)
+        fprintf(dump_file, "inserting pushsig after uid %d\n",
             INSN_UID(insert_ptr));
       asm_expr = gen_rtx_ASM_OPERANDS (VOIDmode, "pushsig", "", 0,
           rtvec_alloc (0), rtvec_alloc (0),
           rtvec_alloc (0), UNKNOWN_LOCATION);
       MEM_VOLATILE_P(asm_expr) = true;
-      add_insn_before(make_insn_raw(asm_expr), insert_ptr, bb);
+      
+      if (EDGE_COUNT(bb->preds) > 1)
+        add_insn_after(make_insn_raw(asm_expr), insert_ptr, new_bb);
+      else
+        add_insn_before(make_insn_raw(asm_expr), insert_ptr, bb);
     }
 
     insert_ptr = BB_END(bb);

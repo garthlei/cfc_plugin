@@ -95,6 +95,20 @@ unsigned int pass_cfcss::execute(function *fun) {
   push_cfun(fun);
 
   FOR_EACH_BB_FN (bb, fun) {
+    // We do not support abnormal calls.
+    edge e;
+    edge_iterator ei;
+    FOR_EACH_EDGE(e, ei, bb->preds) {
+      if ((e->flags & EDGE_ABNORMAL_CALL) != 0) {
+        if (dump_file != nullptr)
+          fprintf(dump_file, "control flow integrity is not enforced because"
+              " of abnormal call edge <bb %d>-><bb %d>\n",
+              e->src->index, e->dest->index);
+        pop_cfun();
+        return 0;
+      }
+    }
+
     // Find all the call statements. The basic blocks are to be split after
     // those statements because subroutine calls can bring changes to the CRC
     // signature.
@@ -166,6 +180,7 @@ unsigned int pass_cfcss::execute(function *fun) {
             "control flow integrity is not enforced because bb %d"
             " has too many successors.\n",
             bb->index);
+      pop_cfun();
       return 0;
     }
 
@@ -178,10 +193,14 @@ unsigned int pass_cfcss::execute(function *fun) {
       // had a fallthru multi-fan-out predecessor, that edge would also
       // be split, leading to messy problems.
       edge fallthru_edge = FALLTHRU_EDGE(bb);
-      if ((fallthru_edge->flags & EDGE_ABNORMAL) != 0)
+      if ((fallthru_edge->flags & EDGE_ABNORMAL) != 0) {
+        pop_cfun();
         return 0;
-      if (!(fallthru_edge->flags & EDGE_FALLTHRU))
+      }
+      if (!(fallthru_edge->flags & EDGE_FALLTHRU)) {
+        pop_cfun();
         return 0;
+      }
       fall_thru_sigs.push_back(fallthru_edge);
       auto br_target = BRANCH_EDGE(bb)->dest;
       dmap[bb] = sig[bb] ^ sig[(*br_target->preds)[0]->src];
